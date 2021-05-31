@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+# Copyright (c) 2021 Microchip Technology Inc. and its subsidiaries.
+# SPDX-License-Identifier: MIT
+
+unset MCHP_DOCKER_NAME
+unset MCHP_DOCKER_TAG
+unset MCHP_DOCKER_DIGEST
+unset MCHP_DOCKER_OPTIONS
+unset MCHP_DOCKER_DEBUG
+unset MCHP_DOCKER_PULL
+unset MCHP_DOCKER_VERBOSE
+
+script=$(basename $0)
+denv=".docker.env"
+top=$(pwd)
+
+usage() {
+    echo "$script usage:"
+    echo "  $script [options] [command]"
+    echo ""
+    echo "Options:"
+    echo "  -d  Debug mode. Specify image by \"name:latest\" and ignore tag and digest"
+    echo "      even if they are present in $denv. This way you don't have to update"
+    echo "      tag and digest after each docker build in order to test the image."
+    echo "  -h  Show this help."
+    echo "  -p  Pull docker image unconditionally using name:tag (ignore digest)."
+    echo "  -v  Verbose mode."
+    echo ""
+    echo "Command:"
+    echo "  Optional command to run - default command depends on docker image."
+    echo ""
+    echo "File $denv:"
+    echo "  This file must be present somewhere between the current directory and"
+    echo "  the root of the filesystem (\"/\") when the $script script is used."
+    echo "  It determines which docker image to run and will eventually pull it"
+    echo "  if not found in the local cache."
+    echo ""
+    echo "  The following variables are supported:"
+    echo "    MCHP_DOCKER_NAME    - The name of the repository (required)."
+    echo "    MCHP_DOCKER_TAG     - The tag (optional). Default is \"latest\"."
+    echo "    MCHP_DOCKER_DIGEST  - The digest (optional). If present, the image is"
+    echo "                          identified as \"name@digest\". If missing or -d is "
+    echo "                          given the docker image is identified as \"name:tag\"."
+    echo "    MCHP_DOCKER_OPTIONS - Extra options to the docker run command (optional)."
+    echo ""
+    echo "  The $denv file is sourced in a bash envirinment and it is possible to do all"
+    echo "  kind of processing/verfication and eventually call exit 1 on errors."
+    echo ""
+    echo "  It is possible to define one or more variables and transfer them into the"
+    echo "  container by adding an -e option in MCHP_DOCKER_OPTIONS"
+    echo ""
+    echo "The Docker container is run interactively (-it) and is removed on exit (--rm)."
+    echo "The directory containing the $denv file is mounted 1:1 inside the container"
+    echo "and the current directory inside the container will be the same as outside."
+    exit 1
+}
+
+# Only echo if verbose
+vecho() { if [[ -v MCHP_DOCKER_VERBOSE ]]; then echo "$@"; fi }
+
+while getopts ":dhpv" opt; do
+    case $opt in
+	d)
+	    MCHP_DOCKER_DEBUG=1
+	    ;;
+	h)
+	    usage
+	    ;;
+	p)
+	    MCHP_DOCKER_PULL=1
+	    ;;
+	v)
+	    MCHP_DOCKER_VERBOSE=1
+	    ;;
+	\?)
+	    echo "Invalid option: -$OPTARG" 1>&2
+	    usage
+	    ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+# Search for .docker.env from current directory and back to root directory "/"
+while [[ "$top" != "/" && ! -e "$top/$denv" ]]; do
+    top="$(readlink -f "$top"/..)"
+done
+
+if [[ ! -f "$top/$denv" ]]; then
+    echo "No $denv file found in parent directories" 1>&2
+    exit 1
+fi
+
+source $top/$denv
+
+if [[ ! -v MCHP_DOCKER_NAME ]]; then
+    echo "Docker image name not defined, check $top/$denv" 1>&2
+    exit 1
+fi
+
+if [[ -v MCHP_DOCKER_DEBUG || ! -v MCHP_DOCKER_TAG ]]; then
+    MCHP_DOCKER_TAG="latest"
+fi
+
+pull="${MCHP_DOCKER_NAME}:${MCHP_DOCKER_TAG}"
+
+if [[ -v MCHP_DOCKER_PULL ]]; then
+    echo "Pull $pull"
+    docker pull "$pull"
+fi
+
+if [[ -v MCHP_DOCKER_DEBUG || ! -v MCHP_DOCKER_DIGEST ]]; then
+    unset MCHP_DOCKER_DIGEST
+    image="$pull"
+    match="${MCHP_DOCKER_NAME}_${MCHP_DOCKER_TAG}"
+    format="{{.Repository}}_{{.Tag}}"
+else
+    image="${MCHP_DOCKER_NAME}@${MCHP_DOCKER_DIGEST}"
+    match="${MCHP_DOCKER_NAME}_${MCHP_DOCKER_TAG}_${MCHP_DOCKER_DIGEST}"
+    format="{{.Repository}}_{{.Tag}}_{{.Digest}}"
+fi
+
+vecho "Top     : $top"
+vecho "Name    : $MCHP_DOCKER_NAME"
+vecho "Tag     : $MCHP_DOCKER_TAG"
+vecho "Digest  : $MCHP_DOCKER_DIGEST"
+vecho "Options : $MCHP_DOCKER_OPTIONS"
+vecho "Pull    : $pull"
+vecho "Image   : $image"
+vecho "Match   : $match"
+vecho "Format  : $format"
+vecho "Command : $@"
+
+# Check if the image is present in local cache.
+# If not then pull image from hub.
+docker images --format $format | grep -F --quiet $match
+if [ $? -ne 0 ]; then
+    docker pull $pull
+    if [ $? -ne 0 ]; then
+        echo "Failed to pull docker image $pull" 1>&2
+        exit 1
+    fi
+    if [[ -v MCHP_DOCKER_DIGEST ]]; then
+	# Check that the image just pulled via name:tag has the expected digest
+	docker images --format $format | grep -F --quiet $match
+	if [ $? -ne 0 ]; then
+	    echo "Mismatch between tag and digest, check $top/$denv" 1>&2
+	    exit 1
+	fi
+    fi
+fi
+
+# -it                  : Run interactively
+# --rm                 : Remove the container at exit
+# -v                   : Mount everything from the directory where .docker.env is located.
+# -w                   : Working directory inside the container is the same as outside.
+# $MCHP_DOCKER_OPTIONS : User supplied options in .docker.env
+# $image               : Docker image to run
+docker run \
+       -it \
+       --rm \
+       -v $top:$top \
+       -w $(pwd) \
+       $MCHP_DOCKER_OPTIONS \
+       $image "$@"
