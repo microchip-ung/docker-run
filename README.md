@@ -57,6 +57,10 @@ Example of a `.docker.env` file:
     MCHP_DOCKER_DIGEST=sha256:67b730ece0d34429b455c08124ffd444f021b81e06fa2d9cd0adaf0d0b875182
     MCHP_DOCKER_OPTIONS="-v /etc/vim:/etc/vim -e DEBUG=1 --tmpfs /tmp:exec"
 
-This example runs the official Ubuntu 18:04 image from Dockerhub.
+This example runs the official Ubuntu 18.04 image from Dockerhub.
+
+To run `bash` inside Ubuntu 18.04:
+
+    $ dr bash
 
 Use `dr -h` for runtime help.
