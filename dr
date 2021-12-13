@@ -10,6 +10,7 @@ unset MCHP_DOCKER_OPTIONS
 unset MCHP_DOCKER_DEBUG
 unset MCHP_DOCKER_PULL
 unset MCHP_DOCKER_VERBOSE
+MCHP_DOCKER_IT='-it' # Default is interactive and tty. Disable with -n option
 
 script=$(basename $0)
 denv=".docker.env"
@@ -24,6 +25,8 @@ usage() {
     echo "      even if they are present in $denv. This way you don't have to update"
     echo "      tag and digest after each docker build in order to test the image."
     echo "  -h  Show this help."
+    echo "  -n  No interactive and tty (no '-it'). Default is to use the '-it' option."
+    echo "      Use -n when e.g. running by Jenkins."
     echo "  -p  Pull docker image unconditionally using name:tag (ignore digest)."
     echo "  -v  Verbose mode."
     echo ""
@@ -59,13 +62,16 @@ usage() {
 # Only echo if verbose
 vecho() { if [[ -v MCHP_DOCKER_VERBOSE ]]; then echo "$@"; fi }
 
-while getopts ":dhpv" opt; do
+while getopts ":dhnpv" opt; do
     case $opt in
 	d)
 	    MCHP_DOCKER_DEBUG=1
 	    ;;
 	h)
 	    usage
+	    ;;
+	n)
+	    unset MCHP_DOCKER_IT
 	    ;;
 	p)
 	    MCHP_DOCKER_PULL=1
@@ -151,14 +157,14 @@ if [ $? -ne 0 ]; then
     fi
 fi
 
-# -it                  : Run interactively
+# $MCHP_DOCKER_IT      : Set to '-it' if run interactively
 # --rm                 : Remove the container at exit
 # -v                   : Mount everything from the directory where .docker.env is located.
 # -w                   : Working directory inside the container is the same as outside.
 # $MCHP_DOCKER_OPTIONS : User supplied options in .docker.env
 # $image               : Docker image to run
 docker run \
-       -it \
+       $MCHP_DOCKER_IT \
        --rm \
        -v $top:$top \
        -w $(pwd) \
