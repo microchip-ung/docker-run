@@ -3,18 +3,17 @@
 # Copyright (c) 2021 Microchip Technology Inc. and its subsidiaries.
 # SPDX-License-Identifier: MIT
 
-unset MCHP_DOCKER_NAME
-unset MCHP_DOCKER_TAG
-unset MCHP_DOCKER_DIGEST
-unset MCHP_DOCKER_OPTIONS
 unset MCHP_DOCKER_DEBUG
 unset MCHP_DOCKER_PULL
 unset MCHP_DOCKER_VERBOSE
 unset MCHP_DOCKER_INTERACTIVE
+unset MCHP_DOCKER_NO_FILE
+unset MCHP_DOCKER_TOP
 
 script=$(basename $0)
 denv=".docker.env"
 top=$(pwd)
+hostname=dr-$RANDOM-$(hostname)
 
 usage() {
     echo "$script usage:"
@@ -26,6 +25,8 @@ usage() {
     echo "      tag and digest after each docker build in order to test the image."
     echo "  -h  Show this help."
     echo "  -p  Pull docker image unconditionally using name:tag (ignore digest)."
+    echo "  -n  Ignore $denv file and use environment variables."
+    echo "  -t  Overwrite the top folder, can be used only with -n option."
     echo "  -v  Verbose mode."
     echo ""
     echo "Command:"
@@ -60,7 +61,7 @@ usage() {
 # Only echo if verbose
 vecho() { if [[ -v MCHP_DOCKER_VERBOSE ]]; then echo "$@"; fi }
 
-while getopts ":dhpv" opt; do
+while getopts ":dhpvnt:" opt; do
     case $opt in
 	d)
 	    MCHP_DOCKER_DEBUG=1
@@ -74,6 +75,12 @@ while getopts ":dhpv" opt; do
 	v)
 	    MCHP_DOCKER_VERBOSE=1
 	    ;;
+	n)
+	    MCHP_DOCKER_NO_FILE=1
+	    ;;
+        t)
+	    MCHP_DOCKER_TOP=$OPTARG
+            ;;
 	\?)
 	    echo "Invalid option: -$OPTARG" 1>&2
 	    usage
@@ -83,17 +90,28 @@ done
 
 shift $((OPTIND - 1))
 
-# Search for .docker.env from current directory and back to root directory "/"
-while [[ "$top" != "/" && ! -e "$top/$denv" ]]; do
-    top="$(readlink -f "$top"/..)"
-done
+if [[ -v MCHP_DOCKER_NO_FILE ]]; then
+    if [[ -v MCHP_DOCKER_TOP ]]; then
+        top="$(readlink -f "$MCHP_DOCKER_TOP")"
+    fi
+else
+    unset MCHP_DOCKER_NAME
+    unset MCHP_DOCKER_TAG
+    unset MCHP_DOCKER_DIGEST
+    unset MCHP_DOCKER_OPTIONS
 
-if [[ ! -f "$top/$denv" ]]; then
-    echo "No $denv file found in parent directories" 1>&2
-    exit 1
+    # Search for .docker.env from current directory and back to root directory "/"
+    while [[ "$top" != "/" && ! -e "$top/$denv" ]]; do
+        top="$(readlink -f "$top"/..)"
+    done
+
+    if [[ ! -f "$top/$denv" ]]; then
+        echo "No $denv file found in parent directories" 1>&2
+        exit 1
+    fi
+
+    source $top/$denv
 fi
-
-source $top/$denv
 
 if [[ ! -v MCHP_DOCKER_NAME ]]; then
     echo "Docker image name not defined, check $top/$denv" 1>&2
@@ -161,11 +179,21 @@ fi
 # -v                   : Mount everything from the directory where .docker.env is located.
 # -w                   : Working directory inside the container is the same as outside.
 # $MCHP_DOCKER_OPTIONS : User supplied options in .docker.env
+args=(run $MCHP_DOCKER_INTERACTIVE --hostname $hostname --rm -v $top:$top -w $(pwd) $MCHP_DOCKER_OPTIONS)
+# parse all the other MCHP_DOCKER_OPTIONS$i options, these contains white spaces
+for i in $(seq 0 1024)
+do
+    combined=MCHP_DOCKER_OPTIONS${i}
+    if [ ! -z "${!combined}" ]
+    then
+	var1=$(eval echo ${!combined} | cut -d '=' -f 1)
+	var2=$(eval echo ${!combined} | cut -d '=' -f 2)
+	args+=(-e ${var1}="${var2}")
+    fi
+done
+
 # $image               : Docker image to run
-docker run \
-       $MCHP_DOCKER_INTERACTIVE \
-       --rm \
-       -v $top:$top \
-       -w $(pwd) \
-       $MCHP_DOCKER_OPTIONS \
-       $image "$@"
+args+=($image "$@")
+
+vecho "docker ${args[@]}"
+docker "${args[@]}"
